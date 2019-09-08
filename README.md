@@ -5,7 +5,7 @@ Lightweight C# SQL Server client library which enables you to write data access 
 Define your object-relational mappings using the Table and Column attributes on your class, like so:
 
     [Table("teacher")]
-    public class Teacher : IEquatable<Teacher>
+    public class Teacher
     {
         [Column("id", SqlDbType.Int, Key = true, Identity = true)]
         public int Id { get; set; }
