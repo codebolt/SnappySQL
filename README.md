@@ -1,5 +1,5 @@
 # SnappySQL
-Lightweight C# SQL Server client wrapper which enables you to write data access code with minimal boilerplate and no performance penalty.
+Lightweight C# SQL Server client library which enables you to write data access code with minimal boilerplate and no performance penalty.
 
 ## Basic usage
 Define your object-relational mappings using the Table and Column attributes on your class, like so:
