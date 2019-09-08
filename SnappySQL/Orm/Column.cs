@@ -17,5 +17,21 @@ namespace SnappySql.Orm
         /// The data type of the column in the database.
         /// </summary>
         public SqlDbType DbType { get; set; }
+        /// <summary>
+        /// True iff this column is a key column in the database table.
+        /// </summary>
+        public bool Key { get; set; }
+        /// <summary>
+        /// True iff this key column is an identity column that is set by SQL Server.
+        /// </summary>
+        public bool Identity { get; set; }
+
+        public object IdentityDefault { get; set; } = 0;
+
+        public Column() { }
+
+        public Column(string name) => Name = name;
+
+        public Column(string name, SqlDbType dbType) : this(name) => DbType = dbType;
     }
 }

@@ -6,5 +6,9 @@ namespace SnappySql.Orm
     public class Table : Attribute
     {
         public string Name { get; set; }
+
+        public Table() { }
+
+        public Table(string name) => Name = name;
     }
 }

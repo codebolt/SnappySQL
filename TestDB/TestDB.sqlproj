@@ -57,4 +57,16 @@
   <ItemGroup>
     <Folder Include="Properties" />
   </ItemGroup>
+  <ItemGroup>
+    <Build Include="Student.sql" />
+    <Build Include="Class.sql" />
+    <Build Include="Teacher.sql" />
+    <Build Include="Attendance.sql" />
+  </ItemGroup>
+  <ItemGroup>
+    <PostDeploy Include="PostDeployment.Truncate.sql" />
+  </ItemGroup>
+  <PropertyGroup>
+    <PostBuildEvent>xcopy "$(ProjectDir)$(OutputPath)TestDB.dacpac" "$(SolutionDir)UnitTests\$(OutputPath)netcoreapp3.0\" /Y</PostBuildEvent>
+  </PropertyGroup>
 </Project>
