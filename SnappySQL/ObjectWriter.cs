@@ -1,48 +1,57 @@
 ﻿using SnappySql.Orm;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+
 namespace SnappySql
 {
-    internal interface IObjectDbWriter<T> where T : class
+    internal class ObjectWriter<T> where T : class
     {
-        int WriteObject(SqlConnection conn, T obj);
+        protected readonly string insertOrUpdateStmt;
+        protected readonly string deleteStmt;
+        protected readonly ValueToDBConverter valueConverter;
+        protected readonly IEnumerable<(PropertyInfo property, Column column)> columns, keyColumns;
 
-        int WriteObjectList(SqlConnection conn, IEnumerable<T> list);
-    }
+        internal ObjectWriter(string insertOrUpdateStmt, string deleteStmt, ValueToDBConverter valueConverter, IEnumerable<(PropertyInfo, Column)> columns)
+        {
+            this.insertOrUpdateStmt = insertOrUpdateStmt;
+            this.deleteStmt = deleteStmt;
+            this.valueConverter = valueConverter;
+            this.columns = columns;
+            keyColumns = this.columns.Where(pc => pc.column.Key);
+        }
 
-    static internal class ObjectDbWriterHelpers
-    {
-        static internal int WriteObject<T>(SqlConnection conn, T obj, 
-            string statement, IEnumerable<(PropertyInfo property, Column column)> columns,
-            IValueToDBConverter converter)
+        protected int ExecuteNonQuery(SqlConnection conn, T obj,
+            string statement, IEnumerable<(PropertyInfo property, Column column)> columns)
         {
             using var cmd = new SqlCommand(statement, conn);
             foreach (var pc in columns)
             {
-                object value = converter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
+                object value = valueConverter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
                 cmd.Parameters.AddWithValue(pc.property.Name, value);
             }
             return cmd.ExecuteNonQuery();
         }
 
-        static internal int WriteObjects<T>(SqlConnection conn, IEnumerable<T> list, 
-            string statement, IEnumerable<(PropertyInfo property, Column column)> columns,
-            IValueToDBConverter converter)
+        protected int ExecuteNonQueryList(SqlConnection conn, IEnumerable<T> list,
+            string statement, IEnumerable<(PropertyInfo property, Column column)> columns)
         {
             int sum = 0;
             using var cmd = new SqlCommand(statement, conn);
+            // Reuse the same SqlCommand for each object in the list
             bool first = true;
             foreach (var obj in list)
             {
                 foreach (var pc in columns)
                 {
-                    object value = converter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
+                    object value = valueConverter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
                     if (first)
                         cmd.Parameters.AddWithValue(pc.property.Name, value);
                     else
@@ -53,60 +62,44 @@ namespace SnappySql
             }
             return sum;
         }
+
+        internal virtual int WriteObject(SqlConnection conn, T obj) =>
+            ExecuteNonQuery(conn, obj, insertOrUpdateStmt, columns);
+
+        internal virtual int WriteObjectList(SqlConnection conn, IEnumerable<T> list) =>
+            ExecuteNonQueryList(conn, list, insertOrUpdateStmt, columns);
+
+        internal virtual int DeleteObject(SqlConnection conn, T obj) =>
+            ExecuteNonQuery(conn, obj, deleteStmt, keyColumns);
     }
 
-    /// <summary>
-    /// Used for classes with one or more keys (no identity columns) and one or more non-key columns.
-    /// </summary>
-    internal class StandardObjectDbWriter<T> : IObjectDbWriter<T> where T : class
-    {
-        private readonly string insertOrUpdateStmt;
-        private readonly IValueToDBConverter valueConverter;
-        private readonly IEnumerable<(PropertyInfo property, Column column)> columns;
-
-        internal StandardObjectDbWriter(string insertOrUpdateStmt, IValueToDBConverter valueConverter, IEnumerable<(PropertyInfo, Column)> columns)
-        {
-            this.insertOrUpdateStmt = insertOrUpdateStmt;
-            this.valueConverter = valueConverter;
-            this.columns = columns;
-        }
-
-        int IObjectDbWriter<T>.WriteObject(SqlConnection conn, T obj) =>
-            ObjectDbWriterHelpers.WriteObject(conn, obj, insertOrUpdateStmt, columns, valueConverter);
-
-        int IObjectDbWriter<T>.WriteObjectList(SqlConnection conn, IEnumerable<T> list) =>
-            ObjectDbWriterHelpers.WriteObject(conn, list, insertOrUpdateStmt, columns, valueConverter);
-    }
-
-    internal class IdentityObjectDbWriter<T> : IObjectDbWriter<T> where T : class
+    internal class IdentityObjectWriter<T> : ObjectWriter<T> where T : class
     {
         private readonly string insertStmt;
         private readonly string updateStmt;
-        private readonly IValueToDBConverter valueToDBConverter;
-        private readonly IEnumerable<(PropertyInfo property, Column column)> columns, nonIdentityColumns;
+        private readonly IEnumerable<(PropertyInfo property, Column column)> nonIdentityColumns;
         private readonly (PropertyInfo property, Column column) identity;
         private readonly bool intIdentity;
 
-        public IdentityObjectDbWriter(string insertStmt, string updateStmt,
-            IValueToDBConverter valueToDBConverter,
-            IEnumerable<(PropertyInfo property, Column column)> columns)
+        public IdentityObjectWriter(string insertStmt, string updateStmt, string deleteStmt,
+            ValueToDBConverter valueConverter, IEnumerable<(PropertyInfo, Column)> columns) 
+            : base("", deleteStmt, valueConverter, columns)
         {
             this.insertStmt = insertStmt;
             this.updateStmt = updateStmt;
-            this.valueToDBConverter = valueToDBConverter;
-            this.columns = columns;
-            nonIdentityColumns = columns.Where(pc => !pc.column.Identity);
-            identity = columns.Single(pc => pc.column.Identity);
-            intIdentity = identity.property.PropertyType.IsAssignableFrom(typeof(int));
+            nonIdentityColumns = this.columns.Where(pc => !pc.column.Identity);
+            identity = this.columns.Single(pc => pc.column.Identity);
+            intIdentity =  new[] { typeof(long), typeof(ulong), typeof(long?), typeof(ulong?) }
+                .Any(t => TypeDescriptor.GetConverter(identity.property.PropertyType).CanConvertTo(t));
         }
 
         private bool IdentityMissing(T obj) =>
             Equals(identity.property.GetMethod.Invoke(obj, null), identity.column.IdentityDefault);
 
-        int IObjectDbWriter<T>.WriteObject(SqlConnection conn, T obj)
+        internal override int WriteObject(SqlConnection conn, T obj)
         {
-            if (!IdentityMissing(obj))
-                return ObjectDbWriterHelpers.WriteObject(conn, obj, updateStmt, columns, valueToDBConverter);
+            if (!IdentityMissing(obj)) // If identity-property is set, execute update
+                return ExecuteNonQuery(conn, obj, updateStmt, columns);
 
             // When inserting identity-keyed objects, the insert statement
             // has an additional select identity_scope appended so the
@@ -114,7 +107,7 @@ namespace SnappySql
             using var cmd = new SqlCommand(insertStmt, conn);
             foreach (var pc in nonIdentityColumns)
             {
-                object value = valueToDBConverter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
+                object value = valueConverter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
                 cmd.Parameters.AddWithValue(pc.property.Name, value);
             }
             object identityValue = cmd.ExecuteScalar();
@@ -125,32 +118,37 @@ namespace SnappySql
             return 1;
         }
 
-        int IObjectDbWriter<T>.WriteObjectList(SqlConnection conn, IEnumerable<T> list)
+        internal override int WriteObjectList(SqlConnection conn, IEnumerable<T> list)
         {
+            // Separate the list into updates and inserts
             var updList = list.Where(obj => !IdentityMissing(obj));
             int sum = 0;
 
             if (updList.Any())
-                sum += ObjectDbWriterHelpers.WriteObjects(conn, updList, updateStmt,
-                    columns, valueToDBConverter);
+                sum += ExecuteNonQueryList(conn, updList, updateStmt, columns);
 
             var insList = list.Where(obj => IdentityMissing(obj));
             if (!insList.Any())
                 return sum;
 
             using var cmd = new SqlCommand(insertStmt, conn);
+            bool first = true;
             foreach(var obj in insList)
             {
                 foreach (var pc in nonIdentityColumns)
                 {
-                    object value = valueToDBConverter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
-                    cmd.Parameters.AddWithValue(pc.property.Name, value);
+                    object value = valueConverter.ConvertValue(pc.property.GetMethod.Invoke(obj, null), pc.column.DbType);
+                    if (first)
+                        cmd.Parameters.AddWithValue(pc.property.Name, value);
+                    else
+                        cmd.Parameters[pc.property.Name].Value = value;
                 }
                 object identityValue = cmd.ExecuteScalar();
                 if (intIdentity && identityValue is decimal d)
                     identityValue = decimal.ToInt32(d);
                 identity.property.SetMethod.Invoke(obj, new[] { identityValue });
                 sum++;
+                first = false;
             }
             return sum;
         }
@@ -158,7 +156,7 @@ namespace SnappySql
 
     internal static class ObjectWriterFactory
     {
-        internal static IObjectDbWriter<T> CreateObjectDbWriter<T>(string tableName, IValueToDBConverter valueToDBConverter) where T : class
+        internal static ObjectWriter<T> CreateObjectDbWriter<T>(string tableName, ValueToDBConverter valueToDBConverter) where T : class
         {
             if (string.IsNullOrEmpty(tableName))
             {
@@ -206,19 +204,20 @@ namespace SnappySql
             {
                 var sb = new StringBuilder();
                 sb.Append(MakeUpdateStatement() + "; if @@rowcount=0 ");
-                sb.Append($"if not exists (select top 1 from {tableName} where {MakeFilter()}) ");
                 sb.Append(MakeInsertStatement());
                 return sb.ToString();
             }
 
-            if(identity.Any())
+            string deleteStatement = $"delete from {tableName} where {MakeFilter()}";
+
+            if (identity.Any())
             {
                 if (identity.Count() > 1 || 
                     columnProps.Any(pc => !pc.column.Identity && pc.column.Key))
                     throw new NotImplementedException("No support for models with multiple identity columns or mixed keys (identity and non-identity).");
 
-                return new IdentityObjectDbWriter<T>(MakeInsertStatement(true),
-                    MakeUpdateStatement(), valueToDBConverter, columnProps);
+                return new IdentityObjectWriter<T>(MakeInsertStatement(true),
+                    MakeUpdateStatement(), deleteStatement, valueToDBConverter, columnProps);
             }
             else
             {
@@ -227,7 +226,7 @@ namespace SnappySql
                     statement = MakeInsertOrUpdateStatement();
                 else
                     statement = MakeInsertStatement(ifNotExists: keyProps.Any());
-                return new StandardObjectDbWriter<T>(statement, valueToDBConverter, columnProps);
+                return new ObjectWriter<T>(statement, deleteStatement, valueToDBConverter, columnProps);
             }
         }
     }

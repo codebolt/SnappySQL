@@ -9,20 +9,20 @@ namespace SnappySql
     {
         public ISqlConnectionFactory ConnectionFactory { get; }
 
-        private readonly IValueFromDBConverter valueFromDBConverter;
-        private readonly IValueToDBConverter valueToDBConverter;
+        private readonly ValueFromDBConverter valueFromDBConverter;
+        private readonly ValueToDBConverter valueToDBConverter;
 
-        public SnappyEngine(ISqlConnectionFactory connectionFactory, IValueFromDBConverter valueFromDBConverter = null, IValueToDBConverter valueToDBConverter = null)
+        public SnappyEngine(ISqlConnectionFactory connectionFactory, ValueFromDBConverter valueFromDBConverter = null, ValueToDBConverter valueToDBConverter = null)
         {
-            this.valueFromDBConverter = valueFromDBConverter ?? new DefaultValueFromDBConverter();
-            this.valueToDBConverter = valueToDBConverter ?? new DefaultValueToDBConverter();
+            this.valueFromDBConverter = valueFromDBConverter ?? new ValueFromDBConverter();
+            this.valueToDBConverter = valueToDBConverter ?? new ValueToDBConverter();
             ConnectionFactory = connectionFactory;
         }
 
-        public SnappyEngine(string connectionString, IValueFromDBConverter valueFromDBConverter = null, IValueToDBConverter valueToDBConverter = null)
+        public SnappyEngine(string connectionString, ValueFromDBConverter valueFromDBConverter = null, ValueToDBConverter valueToDBConverter = null)
         {
-            this.valueFromDBConverter = valueFromDBConverter ?? new DefaultValueFromDBConverter();
-            this.valueToDBConverter = valueToDBConverter ?? new DefaultValueToDBConverter();
+            this.valueFromDBConverter = valueFromDBConverter ?? new ValueFromDBConverter();
+            this.valueToDBConverter = valueToDBConverter ?? new ValueToDBConverter();
             ConnectionFactory = new SqlConnectionFactory(connectionString);
         }
 
@@ -106,6 +106,13 @@ namespace SnappySql
             return GetObjectReader<T>().Read(dataReader);
         }
 
+        public T Query<T>(SqlConnection conn, string query) where T : class
+        {
+            using var cmd = new SqlCommand(query, conn);
+            using var dataReader = cmd.ExecuteReader();
+            return GetObjectReader<T>().Read(dataReader);
+        }
+
         public T Query<T>(string query, params (string, object)[] parameters) where T : class
         {
             using var conn = ConnectionFactory.GetConnection();
@@ -127,6 +134,13 @@ namespace SnappySql
             using var conn = ConnectionFactory.GetConnection();
             conn.Open();
             return Query<T>(conn, query, parameters);
+        }
+
+        public T Query<T>(string query) where T : class
+        {
+            using var conn = ConnectionFactory.GetConnection();
+            conn.Open();
+            return Query<T>(conn, query);
         }
         #endregion
 
@@ -220,17 +234,17 @@ namespace SnappySql
 
         #region ObjectWriter cache
         private readonly Dictionary<string, object> _objectWriterCache = new Dictionary<string, object>();
-        private IObjectDbWriter<T> GetObjectWriter<T>(string tableName = "") where T : class
+        private ObjectWriter<T> GetObjectWriter<T>(string tableName = "") where T : class
         {
             string key = typeof(T).FullName;
             if (!string.IsNullOrEmpty(tableName))
                 key += "#" + tableName;
 
-            IObjectDbWriter<T> ow;
+            ObjectWriter<T> ow;
             lock(_objectWriterCache)
             {
                 if (_objectWriterCache.TryGetValue(key, out var value))
-                    ow = (IObjectDbWriter<T>) value;
+                    ow = (ObjectWriter<T>) value;
                 else
                 {
                     ow = ObjectWriterFactory.CreateObjectDbWriter<T>(tableName, valueToDBConverter);

@@ -1,80 +1,81 @@
 ﻿using SnappySql.Orm;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
-using System.Reflection;
 using System.Reflection.Emit;
 
 namespace SnappySql
 {
     internal static class ObjectReaderFactory
     {
-        private static readonly Type[] valueFromDBParameterTypes = 
-            { typeof(SqlDataReader), typeof(Column) };
-
-        private static MethodInfo GetValueConverterForProperty(PropertyInfo property, IValueFromDBConverter valueFromDBConverter)
+        private static Func<ValueFromDBConverter, SqlDataReader, T> GenReader<T>(ValueFromDBConverter converter)
         {
-            MethodInfo GetValueFromDBMethod(string methodName) =>
-                valueFromDBConverter.GetType().GetMethod(methodName, valueFromDBParameterTypes);
+            var dataReaderGetOrdinal = typeof(SqlDataReader).GetMethod(nameof(SqlDataReader.GetOrdinal), new[] { typeof(string) });
+            var dataReaderGetValue = typeof(SqlDataReader).GetMethod(nameof(SqlDataReader.GetValue), new[] { typeof(int) });
+            var ctor = typeof(T).GetConstructor(new Type[0]) ?? throw new ArgumentException("Type missing default constructor.");
+            var properties = typeof(T).GetProperties()
+                .Where(p => Attribute.IsDefined(p, typeof(Column)));
+            var dm = new DynamicMethod("Read" + typeof(T).Name, typeof(T), 
+                new[] { typeof(ValueFromDBConverter), typeof(SqlDataReader) });
 
-            MethodInfo method = null;
-            if (typeof(string).IsAssignableFrom(property.PropertyType))
-                method = GetValueFromDBMethod(nameof(valueFromDBConverter.GetString));
-            else if (typeof(int).IsAssignableFrom(property.PropertyType))
-                method = GetValueFromDBMethod(nameof(valueFromDBConverter.GetInt));
-            else if (typeof(int?).IsAssignableFrom(property.PropertyType))
-                method = GetValueFromDBMethod(nameof(valueFromDBConverter.GetIntNullable));
-
-            return method ??
-                throw new ArgumentException("Unsupported Column property type " + property.PropertyType.Name + " in class " + property.DeclaringType.FullName + ".");
-        }
-
-        private static Action<T, IValueFromDBConverter, Column, SqlDataReader> GenPropSetter<T>(MethodInfo setter, MethodInfo conv)
-        {
-            var dm = new DynamicMethod("SetProp_" + new Guid().ToString(), null,
-                new[] { typeof(T), typeof(IValueFromDBConverter), typeof(Column), typeof(SqlDataReader) });
             var gen = dm.GetILGenerator();
+            gen.DeclareLocal(typeof(T));
+            gen.DeclareLocal(typeof(int));
+            gen.DeclareLocal(typeof(object));
+            gen.Emit(OpCodes.Newobj, ctor); // push obj
+            gen.Emit(OpCodes.Stloc_0);
+            
+            foreach(var property in properties)
+            {
+                var column = (Column)Attribute.GetCustomAttribute(property, typeof(Column));
+                var convMethod = converter.GetConvertMethod(property.PropertyType) 
+                    ?? throw new ArgumentException("Unable to find converter for property.");
+                var setter = property.GetSetMethod() 
+                    ?? throw new ArgumentException("Property missing setter.");
+                gen.Emit(OpCodes.Ldarg_1); // SqlDataReader
+                gen.Emit(OpCodes.Ldstr, column.Name);
+                gen.Emit(OpCodes.Callvirt, dataReaderGetOrdinal); // dataReader.GetOrdinal
+                gen.Emit(OpCodes.Stloc_1);
 
-            gen.Emit(OpCodes.Ldarg_0); // push obj
+                gen.Emit(OpCodes.Ldarg_1); // SqlDataReader
+                gen.Emit(OpCodes.Ldloc_1);
+                gen.Emit(OpCodes.Callvirt, dataReaderGetValue); // dataReader.GetValue
+                gen.Emit(OpCodes.Stloc_2);
 
-            gen.Emit(OpCodes.Ldarg_1); // push ValueExtractor
-            gen.Emit(OpCodes.Ldarg_3); // push SqlDataReader as parameter to GetXxx
-            gen.Emit(OpCodes.Ldarg_2); // push Column
-            gen.Emit(OpCodes.Call, conv); // invoke valueExtractor.GetXxx
-
-            gen.Emit(OpCodes.Call, setter); // pass the result of GetXxx to obj.Property setter method
+                gen.Emit(OpCodes.Ldloc_0); // obj
+                gen.Emit(OpCodes.Ldarg_0); // ValueFromDBConverter
+                gen.Emit(OpCodes.Ldloc_2);
+                //gen.Emit(OpCodes.Ldc_I4, (int)column.DbType);
+                gen.Emit(OpCodes.Callvirt, convMethod); // converter.GetXxx(object value, int type)
+                gen.Emit(OpCodes.Call, setter); // obj.Property = 
+                // todo: cache ordinals for optimization
+                // todo: gracefully handle missing properties
+            }
+            gen.Emit(OpCodes.Ldloc_0);
             gen.Emit(OpCodes.Ret);
 
-            return (Action<T, IValueFromDBConverter, Column, SqlDataReader>)
-                dm.CreateDelegate(typeof(Action<T, IValueFromDBConverter, Column, SqlDataReader>));
+            return (Func<ValueFromDBConverter, SqlDataReader, T>) dm.CreateDelegate(typeof(Func<ValueFromDBConverter, SqlDataReader, T>));
         }
 
-        internal static ObjectReader<T> CreateObjectReader<T>(IValueFromDBConverter valueFromDBConverter) where T : class
+        internal static ObjectReader<T> CreateObjectReader<T>(ValueFromDBConverter valueFromDBConverter) where T : class
         {
-            var properties = typeof(T).GetProperties()
-                .Where(p => Attribute.IsDefined(p, typeof(Column)))
-                .Select(prop => (set: prop.GetSetMethod(),
-                    col: (Column)Attribute.GetCustomAttribute(prop, typeof(Column)),
-                    conv: GetValueConverterForProperty(prop, valueFromDBConverter)))
-                .Select(prop => (prop.col,
-                    pset: GenPropSetter<T>(prop.set, prop.conv)));
-            return new ObjectReader<T>(properties, valueFromDBConverter);
+            var reader = GenReader<T>(valueFromDBConverter);
+            return new ObjectReader<T>(reader, valueFromDBConverter);
         }
     }
 
     internal class ObjectReader<T> where T : class
     {
-        private readonly IEnumerable<(Column column, Action<T, IValueFromDBConverter, Column, SqlDataReader> propSetter)> columnSetters;
-        private readonly ConstructorInfo ctor;
-        private readonly IValueFromDBConverter valueFromDBConverter;
+        private readonly Func<ValueFromDBConverter, SqlDataReader, T> reader;
+        private readonly ValueFromDBConverter valueFromDBConverter;
 
-        internal ObjectReader(IEnumerable<(Column column, Action<T, IValueFromDBConverter, Column, SqlDataReader> propSetter)> columnSetters,
-            IValueFromDBConverter valueFromDBConverter)
+        internal ObjectReader(Func<ValueFromDBConverter, SqlDataReader, T> reader,
+            ValueFromDBConverter valueFromDBConverter)
         {
-            this.columnSetters = columnSetters;
+            this.reader = reader;
             this.valueFromDBConverter = valueFromDBConverter;
-            ctor = typeof(T).GetConstructor(new Type[0]);
         }
 
         internal IList<T> ReadAll(SqlDataReader reader)
@@ -86,16 +87,7 @@ namespace SnappySql
             return list;
         }
 
-        internal T Read(SqlDataReader reader)
-        {
-            T obj = null;
-            if(reader.Read())
-            {
-                obj = (T) ctor.Invoke(null);
-                foreach(var cs in columnSetters)
-                    cs.propSetter.Invoke(obj, valueFromDBConverter, cs.column, reader);
-            }
-            return obj;
-        }
+        internal T Read(SqlDataReader dataReader) =>
+            dataReader.Read() ? reader.Invoke(valueFromDBConverter, dataReader) : null;
     }
 }

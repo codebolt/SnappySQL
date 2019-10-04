@@ -7,7 +7,7 @@ namespace SnappySql.Orm
     /// Maps a class property to a database table column.
     /// </summary>
     [AttributeUsage(AttributeTargets.Property)]
-    public class Column : Attribute
+    public sealed class Column : Attribute
     {
         /// <summary>
         /// Name of the column as declared in the database.
