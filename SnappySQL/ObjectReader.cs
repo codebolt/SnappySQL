@@ -10,6 +10,8 @@ namespace SnappySql
 {
     internal static class ObjectReaderFactory
     {
+        // Generate a function (Func) that converts a row from the SqlDataReader into an object of type T,
+        // using value conversion in the ValueFromDBConverter object.
         private static Func<ValueFromDBConverter, SqlDataReader, T> GenReader<T>(ValueFromDBConverter converter)
         {
             var dataReaderGetOrdinal = typeof(SqlDataReader).GetMethod(nameof(SqlDataReader.GetOrdinal), new[] { typeof(string) });
