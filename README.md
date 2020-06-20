@@ -31,7 +31,7 @@ Now you can use the SnappyEngine class to save (insert/update) and query, like s
     snappy.Save(myTeacher);
     // myTeacher should now be inserted, and myTeacher.Id is populated with the new identity
 
-    // get first foundteacher found named Emma Stone
+    // get first teacher found named Emma Stone
     var otherTeacher = snappy.Query<Teacher>("select * from teacher where name=@Name", ("Name", "Emma Stone"));
 
     // get all teachers
