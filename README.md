@@ -7,7 +7,8 @@ Define your object-relational mappings using the Table and Column attributes on 
     [Table("teacher")]
     public class Teacher
     {
-        [Column("id", SqlDbType.Int, Key = true, Identity = true)]
+        // Defined as auto increment identity in the table
+        [Column("id", SqlDbType.Int, Key = true, Identity = true)] 
         public int Id { get; set; }
 
         [Column("name", SqlDbType.NVarChar)]
@@ -30,5 +31,8 @@ Now you can use the SnappyEngine class to save (insert/update) and query, like s
     snappy.Save(myTeacher);
     // myTeacher should now be inserted, and myTeacher.Id is populated with the new identity
 
+    // get first foundteacher found named Emma Stone
     var otherTeacher = snappy.Query<Teacher>("select * from teacher where name=@Name", ("Name", "Emma Stone"));
-    // otherTeacher now holds first teacher found named Emma Stone
+
+    // get all teachers
+    var teacherList = snappy.QueryList<Teacher>("select * from teacher);
